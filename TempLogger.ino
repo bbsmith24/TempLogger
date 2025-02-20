@@ -2,26 +2,27 @@
   temperature logger 
   Brian Smith 01/2025
 */
-//#define DEBUG_VERBOSE
-#include "FS.h"
-#include "SD.h"
-#include "SPI.h"
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-#include "SparkFunBME280.h"
-#include <DS3231-RTC.h>
-
+//#define DEBUG_VERBOSE        // uncomment to output mode debugging text to terminal
+#include "FS.h"                // for file system
+#include "SD.h"                // for sd card read/write
+#include "SPI.h"               // SPI bus (used by micorSD card)
+#include <Wire.h>              // I2C bus (used for temp, OLED screen, RTC modules)
+#include <Adafruit_GFX.h>      // OLED
+#include <Adafruit_SSD1306.h>  // OLED driver
+#include "SparkFunBME280.h"    // temp sensor
+#include <DS3231-RTC.h>        // RTC
 //
 // 128x64 OLED display with Adafruit library
 //
-#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
-#define SCREEN_WIDTH 128 // OLED display width, in pixels
-#define SCREEN_HEIGHT 64 // OLED display height, in pixels
-#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+#define OLED_RESET     -1    // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_WIDTH 128     // OLED display width, in pixels
+#define SCREEN_HEIGHT 64     // OLED display height, in pixels
+#define SCREEN_ADDRESS 0x3C  /// I2C address of OLED display < See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 Adafruit_SSD1306 oledDisplay(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 String oledString[4] = {"", "", "", "Temp logger"};
+// temp sensor
 BME280 tempSensor;
+// RTC and clock data
 DS3231 rtcDevice;
 byte year;
 int actualYear;
@@ -36,7 +37,9 @@ bool pmFlag;
 char amPM[16];
 bool century = false;
 char dowName[7][16] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+// used for text output strings
 char buffer512[512];
+// log file info
 char logFileName[32];
 int fileCount = 0;
 bool updateWritten = false;
@@ -45,6 +48,7 @@ bool updateWritten = false;
 //
 void setup() 
 {
+  // serial output setup
   Serial.begin(115200);
   delay(1000);
   #ifdef DEBUG_VERBOSE
@@ -54,11 +58,13 @@ void setup()
   Serial.println("I2C device setup");
   Serial.println("================");
   #endif
+  // start I2C bus
   Wire.begin();
   #ifdef DEBUG_VERBOSE
   Serial.println("OLED");
   Serial.println("====");
   #endif
+  // start OLED
   if(!oledDisplay.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) 
   {
     #ifdef DEBUG_VERBOSE
@@ -75,6 +81,7 @@ void setup()
   Serial.println("============");
   #endif
 
+  // start temp sensor - warn to OLED on fail
   if (tempSensor.beginI2C() == false) //Begin communication over I2C
   {
     #ifdef DEBUG_VERBOSE
@@ -97,6 +104,7 @@ void setup()
   Serial.println("============");
   #endif
 
+  // get time from RTC
   actualYear = 2000 + (century ? 100 : 0) + rtcDevice.getYear();
 	month = rtcDevice.getMonth(century);
   date = rtcDevice.getDate();
@@ -133,6 +141,7 @@ void setup()
   Serial.println("SD Card setup");
   Serial.println("=============");
   #endif
+  // start micorSD card - warn to OLED on fail
   if (!SD.begin()) 
   {
     oledString[1] = "microSD FAIL!";
@@ -174,13 +183,14 @@ void setup()
   }
   uint64_t cardSize = SD.cardSize() / (1024 * 1024);
   Serial.printf("SD Card Size: %lluMB\n", cardSize);
+  // list and count files
   Serial.println("Listing files....");
   #endif
   oledString[1] = "microSD OK!";
   RefreshOLED(1);
   delay(1000);
   listDir(SD, "/", 3);
-
+  // create next file name (logfilenn.txt 'nn' starts at 0, increments by 1 for each restart)
   sprintf(logFileName, "/logfile%02d.txt", (fileCount + 1));
 
   #ifdef DEBUG_VERBOSE
@@ -189,16 +199,22 @@ void setup()
   Serial.printf("Used space: %lluMB\n", SD.usedBytes() / (1024 * 1024));
   #endif
   writeFile(SD, logFileName, "Temperature log\n");
+  // last string displayed to oled screen is the current log file name
   oledString[3] = logFileName;
+  // done with setup
 }
 //
-//
-//
+// loop repeats forever after setup completes
+// as long as power is on
+// and if you didn't do something in code that crashes :)
+// 
 void loop()
 {
+  // prepare strings for output to screen (oledString[0] - oledString[3])
+  // oledString[0] - current temp
   sprintf(buffer512,"%0.2lfF %0.2lfC", tempSensor.readTempF(), tempSensor.readTempC());
   oledString[0] = buffer512;
- 
+  // get date/time from RTC
   actualYear = 2000 + (century ? 100 : 0) + rtcDevice.getYear();
   month = rtcDevice.getMonth(century);
   date = rtcDevice.getDate();
@@ -223,10 +239,14 @@ void loop()
   	sprintf(amPM, "24H");
   }
   sprintf(buffer512, "%s %02d/%02d/%04d", dowName[dOW], month, date, actualYear);
+  // oledString[1] - current date
   oledString[1] = buffer512;
   sprintf(buffer512, "%02d:%02d:%02d %s", hour, minute, second, amPM);
+  // oledString[2] - current time
   oledString[2] = buffer512;
+  // output the strings to the oled screen
   RefreshOLED(1);
+  // if minute is divisible by 5, second = 0, and haven't written temp to microSD, do it now 
   if(((minute % 5) == 0) && (second == 0) && (updateWritten == false))
   {
     updateWritten = true;
@@ -236,14 +256,16 @@ void loop()
     #endif
     appendFile(SD, logFileName, buffer512);
   }
+  // second is not 0, change updateWritten to false so it will output at next 5 minute 0 seconds mark
   if(second != 0)
   {
     updateWritten = false;
   }
+  // wait 100 milliseconds before repeating loop (no need to hammer the CPU to death)
   delay(100);
 }
 //
-//
+// count files on microSD
 //
 int countFiles(fs::FS &fs, const char *dirname, uint8_t levels)
 {
@@ -286,7 +308,7 @@ int countFiles(fs::FS &fs, const char *dirname, uint8_t levels)
   }
 }
 //
-//
+// list files on microSD
 //
 void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
   Serial.printf("Listing directory: %s\n", dirname);
@@ -326,8 +348,11 @@ void listDir(fs::FS &fs, const char *dirname, uint8_t levels) {
     file = root.openNextFile();
   }
 }
-
-void createDir(fs::FS &fs, const char *path) {
+//
+// create a folder on microSD
+//
+void createDir(fs::FS &fs, const char *path) 
+{
   Serial.printf("Creating Dir: %s\n", path);
   if (fs.mkdir(path)) {
     Serial.println("Dir created");
@@ -335,7 +360,9 @@ void createDir(fs::FS &fs, const char *path) {
     Serial.println("mkdir failed");
   }
 }
-
+//
+// delete a folder on microSD
+//
 void removeDir(fs::FS &fs, const char *path) {
   Serial.printf("Removing Dir: %s\n", path);
   if (fs.rmdir(path)) {
@@ -344,7 +371,9 @@ void removeDir(fs::FS &fs, const char *path) {
     Serial.println("rmdir failed");
   }
 }
-
+//
+// read a file
+//
 void readFile(fs::FS &fs, const char *path) {
   Serial.printf("Reading file: %s\n", path);
 
@@ -360,7 +389,9 @@ void readFile(fs::FS &fs, const char *path) {
   }
   file.close();
 }
-
+//
+// write a file (creates a new file)
+//
 void writeFile(fs::FS &fs, const char *path, const char *message) {
   Serial.printf("Writing file: %s\n", path);
 
@@ -376,7 +407,9 @@ void writeFile(fs::FS &fs, const char *path, const char *message) {
   }
   file.close();
 }
-
+//
+// append to an existing file
+//
 void appendFile(fs::FS &fs, const char *path, const char *message) {
   Serial.printf("Appending to file: %s\n", path);
 
@@ -392,7 +425,9 @@ void appendFile(fs::FS &fs, const char *path, const char *message) {
   }
   file.close();
 }
-
+//
+// change file name
+//
 void renameFile(fs::FS &fs, const char *path1, const char *path2) {
   Serial.printf("Renaming file %s to %s\n", path1, path2);
   if (fs.rename(path1, path2)) {
@@ -401,8 +436,11 @@ void renameFile(fs::FS &fs, const char *path1, const char *path2) {
     Serial.println("Rename failed");
   }
 }
-
-void deleteFile(fs::FS &fs, const char *path) {
+//
+// delete a file
+//
+void deleteFile(fs::FS &fs, const char *path) 
+{
   Serial.printf("Deleting file: %s\n", path);
   if (fs.remove(path)) {
     Serial.println("File deleted");
@@ -410,7 +448,9 @@ void deleteFile(fs::FS &fs, const char *path) {
     Serial.println("Delete failed");
   }
 }
-
+//
+// test file read/write speed
+//
 void testFileIO(fs::FS &fs, const char *path) {
   File file = fs.open(path);
   static uint8_t buf[512];
@@ -452,7 +492,7 @@ void testFileIO(fs::FS &fs, const char *path) {
   file.close();
 }
 //
-//
+// output oledString[0] - oledString[3] to lines on screen
 //
 void RefreshOLED(int fontSize)
 {
